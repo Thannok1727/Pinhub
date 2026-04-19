@@ -1,0 +1,6 @@
+{
+  "name": "PinGen: Blog to Pinterest",
+  "description": "Automatically generate high-quality Pinterest pins from any blog post URL. Extracts titles and images to create beautiful 2K resolution pins.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
