@@ -1,16 +1,36 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Download, Link as LinkIcon, RefreshCw, Layers, Image as ImageIcon, Sparkles, CheckCircle2, AlertCircle } from "lucide-react";
+import { 
+  Download, 
+  ExternalLink, 
+  RefreshCcw, 
+  RefreshCw,
+  Sparkles, 
+  Image as ImageIcon, 
+  Check, 
+  Type as TypeIcon, 
+  Palette,
+  ArrowRight,
+  Menu,
+  CheckCircle2,
+  AlertCircle,
+  Link as LinkIcon
+} from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { GoogleGenAI, Type } from "@google/genai";
 
 interface ScrapedData {
   titleA: string;
   titleB: string;
   image: string;
   url: string;
+  suggestedColor?: string;
+  category?: string;
 }
 
 const PIN_WIDTH = 1440;
 const PIN_HEIGHT = 2560; // 9:16 ratio (1440 / 9 * 16 = 2560)
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 function formatTitle(title: string): string {
   if (!title) return "Untitled Post";
@@ -26,28 +46,60 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ScrapedData | null>(null);
   const [accentColor, setAccentColor] = useState("#4A6741");
+  const [boxColor, setBoxColor] = useState("#4A6741");
   const [previews, setPreviews] = useState<{ a: string; b: string } | null>(null);
   
   // Customization
   const [fontSize, setFontSize] = useState(120);
   const [fontFamily, setFontFamily] = useState("'Playfair Display', serif");
   const [textColor, setTextColor] = useState("#FFFFFF");
+  const [showOutline, setShowOutline] = useState(false); // New state for text outline
 
   const timeoutRef = useRef<NodeJS.Timeout|null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
 
   // Debounced Pin Generation
   const debouncedGenerate = useCallback((pinData: ScrapedData) => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
       generatePins(pinData);
-    }, 150);
-  }, [fontSize, fontFamily, textColor]);
+    }, 100);
+  }, [fontSize, fontFamily, textColor, boxColor, showOutline]);
 
   useEffect(() => {
     if (data) {
       debouncedGenerate(data);
     }
-  }, [data, fontSize, fontFamily, textColor, debouncedGenerate]);
+  }, [data, fontSize, fontFamily, textColor, boxColor, showOutline, debouncedGenerate]);
+
+  const suggestTheme = async (title: string) => {
+    try {
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Analyze the recipe name: "${title}". 
+        Suggest a professional Pinterest-style theme color (Hex code) that matches the "vibe" or category of this recipe.
+        Categories: Healthy/Fresh (Greens/Teals), Hearty/Warm (Browns/Reds), Sweet/Pastel (Pinks/Creams), Spicy (Bold Reds), Elegant (Muted tones).
+        Return ONLY a JSON object with: { "color": "#HEXCODE", "category": "categoryName" }.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              color: { type: Type.STRING },
+              category: { type: Type.STRING }
+            },
+            required: ["color", "category"]
+          }
+        }
+      });
+      
+      const theme = JSON.parse(result.text || "{}");
+      return theme;
+    } catch (e) {
+      console.error("AI Theme Error:", e);
+      return null;
+    }
+  };
 
   const handleScrape = async () => {
     if (!url) return;
@@ -55,6 +107,7 @@ export default function App() {
     setError(null);
     setData(null);
     setPreviews(null);
+    imgRef.current = null; // Reset image cache on new scrape
 
     try {
       const response = await fetch("/api/scrape", {
@@ -66,10 +119,20 @@ export default function App() {
       const json = await response.json();
       if (!response.ok) throw new Error(json.error || "Failed to scrape");
 
+      // Get AI enhancement for theme
+      const aiTheme = await suggestTheme(json.title || "");
+
+      // Immediately set the suggested color so manual picks start from here
+      if (aiTheme?.color) {
+        setBoxColor(aiTheme.color);
+      }
+
       const formattedData = {
         ...json,
         titleA: formatTitle(json.title || "Untitled Post"),
         titleB: formatTitle(json.title || "Untitled Post").toUpperCase(), 
+        suggestedColor: aiTheme?.color,
+        category: aiTheme?.category
       };
       
       setData(formattedData);
@@ -84,21 +147,39 @@ export default function App() {
   const generatePins = async (pinData: ScrapedData) => {
     if (!pinData.image) return;
     
+    // If image is already cached, just draw
+    if (imgRef.current && imgRef.current.src.includes(encodeURIComponent(pinData.image))) {
+      renderCanvases(pinData, imgRef.current);
+      return;
+    }
+
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.src = `/api/proxy-image?url=${encodeURIComponent(pinData.image)}`;
 
     img.onload = () => {
-      const color = extractDominantColor(img);
-      setAccentColor(color);
-      const pinA = drawPin(pinData.titleA, img, color, "A");
-      const pinB = drawPin(pinData.titleB, img, color, "B");
-      setPreviews({ a: pinA, b: pinB });
+      // Palette extraction as a fallback if AI didn't provide one
+      if (!pinData.suggestedColor && !imgRef.current) {
+        const paletteColor = extractDominantColor(img);
+        setAccentColor(paletteColor);
+        setBoxColor(paletteColor);
+      } else if (!imgRef.current) {
+        setAccentColor(extractDominantColor(img));
+      }
+      
+      imgRef.current = img;
+      renderCanvases(pinData, img);
     };
 
     img.onerror = () => {
-      setError("Unable to process high-res image. Try another blog post.");
+      setError("Unable to process image. Try another URL.");
     };
+  };
+
+  const renderCanvases = (pinData: ScrapedData, img: HTMLImageElement) => {
+    const pinA = drawPin(pinData.titleA, img, boxColor, "A");
+    const pinB = drawPin(pinData.titleB, img, boxColor, "B");
+    setPreviews({ a: pinA, b: pinB });
   };
 
   const extractDominantColor = (img: HTMLImageElement): string => {
@@ -115,8 +196,9 @@ export default function App() {
         }
         const count = imageData.length / 4;
         r = Math.floor(r / count); g = Math.floor(g / count); b = Math.floor(b / count);
-        if ((r * 0.299 + g * 0.587 + b * 0.114) > 186) {
-          return `rgb(${Math.max(0, r-40)}, ${Math.max(0, g-40)}, ${Math.max(0, b-40)})`;
+        // Ensure it's not too light for white text
+        if ((r * 0.299 + g * 0.587 + b * 0.114) > 200) {
+           return `rgb(${Math.max(0, r-60)}, ${Math.max(0, g-60)}, ${Math.max(0, b-60)})`;
         }
         return `rgb(${r}, ${g}, ${b})`;
     } catch {
@@ -129,42 +211,50 @@ export default function App() {
     canvas.width = PIN_WIDTH;
     canvas.height = PIN_HEIGHT;
     const ctx = canvas.getContext("2d")!;
+    
+    // Enable High-Quality Image Smoothing
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
-    const topH = PIN_HEIGHT * 0.40;
+    // Pin layout ratios based on the example image
+    const topH = PIN_HEIGHT * 0.44;
     const midH = PIN_HEIGHT * 0.20;
-    const botH = PIN_HEIGHT * 0.40;
+    const botH = PIN_HEIGHT - topH - midH;
 
-    // Top
-    if (variation === "B") drawCroppedImage(ctx, img, 0, 0, PIN_WIDTH, topH, 1.25);
-    else drawCroppedImage(ctx, img, 0, 0, PIN_WIDTH, topH, 1.0);
-
-    // Bar
+    // Top Image - Variation B gets a more zoomed/alternative crop
     if (variation === "B") {
-      const grad = ctx.createLinearGradient(0, topH, PIN_WIDTH, topH + midH);
-      grad.addColorStop(0, color);
-      grad.addColorStop(1, adjustColor(color, -30));
-      ctx.fillStyle = grad;
-    } else ctx.fillStyle = color;
+      drawCroppedImage(ctx, img, 0, 0, PIN_WIDTH, topH, 1.25, 0.3);
+    } else {
+      drawCroppedImage(ctx, img, 0, 0, PIN_WIDTH, topH, 1.15, 0.4);
+    }
+
+    // Text Box
+    ctx.fillStyle = color;
     ctx.fillRect(0, topH, PIN_WIDTH, midH);
 
-    // Text
+    // Text Overlay
     ctx.save();
     ctx.fillStyle = textColor || "#FFFFFF";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.font = `bold ${fontSize}px ${fontFamily}`;
     
+    // We only force uppercase for the FIRST auto-generation. 
+    // Afterward, we respect what's in the textarea. 
+    ctx.font = `900 ${fontSize}px ${fontFamily}`;
+    
+    // Different shadows for variety
     if (variation === "B") {
-      ctx.shadowColor = "rgba(0,0,0,0.4)";
+      ctx.shadowColor = "rgba(0,0,0,0.3)";
       ctx.shadowBlur = 20;
-      ctx.shadowOffsetX = 6;
-      ctx.shadowOffsetY = 6;
+    } else {
+      ctx.shadowColor = "rgba(0,0,0,0.2)";
+      ctx.shadowBlur = 10;
     }
 
-    const words = title.toUpperCase().split(" ");
+    const words = title.split(" ");
     let lines = [];
     let currentLine = words[0];
-    const charLimit = Math.max(8, Math.floor(1800 / fontSize));
+    const charLimit = Math.max(8, Math.floor(1600 / fontSize));
     
     for (let i = 1; i < words.length; i++) {
         if (currentLine.length + words[i].length < charLimit) currentLine += " " + words[i];
@@ -172,29 +262,58 @@ export default function App() {
     }
     lines.push(currentLine);
     
-    // Allow up to 3 lines for longer titles
     if (lines.length > 3) {
       lines = [lines[0], lines[1], lines.slice(2).join(" ")];
-      const maxLastLineChars = Math.max(12, Math.floor(2500 / fontSize));
+      const maxLastLineChars = Math.max(12, Math.floor(2200 / fontSize));
       if (lines[2].length > maxLastLineChars) lines[2] = lines[2].substring(0, maxLastLineChars - 3) + "...";
     }
 
-    const lineHeight = fontSize * 1.25;
+    const lineHeight = fontSize * 1.15;
     const startY = topH + (midH / 2) - ((lines.length - 1) * lineHeight / 2);
-    lines.forEach((line, idx) => ctx.fillText(line, PIN_WIDTH / 2, startY + (idx * lineHeight)));
+    
+    lines.forEach((line, idx) => {
+        const lx = PIN_WIDTH / 2;
+        const ly = startY + (idx * lineHeight);
+        
+        if (showOutline) {
+          ctx.strokeStyle = adjustColor(color, -60);
+          ctx.lineWidth = fontSize * 0.08;
+          ctx.lineJoin = "round";
+          ctx.strokeText(line.trim(), lx, ly);
+        }
+        
+        ctx.fillText(line.trim(), lx, ly);
+    });
     ctx.restore();
 
-    // Bottom
-    if (variation === "B") drawCroppedImage(ctx, img, 0, topH + midH, PIN_WIDTH, botH, 1.35, 0.7);
-    else drawCroppedImage(ctx, img, 0, topH + midH, PIN_WIDTH, botH, 1.15, 0.65);
+    // Bottom Image
+    if (variation === "B") {
+      drawCroppedImage(ctx, img, 0, topH + midH, PIN_WIDTH, botH, 1.4, 0.8);
+    } else {
+      drawCroppedImage(ctx, img, 0, topH + midH, PIN_WIDTH, botH, 1.2, 0.7);
+    }
 
-    // Branding
-    ctx.save();
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
-    ctx.font = "italic 44px serif";
-    ctx.textAlign = "center";
-    try { ctx.fillText(new URL(url).hostname.replace('www.', ''), PIN_WIDTH / 2, PIN_HEIGHT - 80); } catch { }
-    ctx.restore();
+    // Branding Pill
+    try {
+        const domain = new URL(url).hostname.replace('www.', '');
+        ctx.save();
+        ctx.fillStyle = adjustColor(color, -40); 
+        const pillW = ctx.measureText(domain).width + 120;
+        const pillH = 70;
+        const pillX = (PIN_WIDTH - pillW) / 2;
+        const pillY = topH + midH - (pillH / 2);
+        
+        ctx.beginPath();
+        ctx.roundRect(pillX, pillY, pillW, pillH, pillH/2);
+        ctx.fill();
+        
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = "bold 36px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(domain, PIN_WIDTH / 2, pillY + (pillH / 2));
+        ctx.restore();
+    } catch {}
 
     return canvas.toDataURL("image/jpeg", 0.95);
   };
@@ -335,26 +454,54 @@ export default function App() {
                 </div>
 
                 <div className="space-y-4">
-                  <label className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40 block">Palette Signature</label>
-                  <div className="flex gap-3 items-center">
-                    <div className="relative group">
-                      <input 
-                        type="color"
-                        className="w-12 h-12 rounded-full border-4 border-white shadow-lg cursor-pointer p-0 bg-transparent overflow-hidden"
-                        value={textColor}
-                        onChange={(e) => setTextColor(e.target.value)}
-                      />
-                    </div>
-                    <div className="flex gap-2 ml-2">
-                       {['#FFFFFF', '#000000', accentColor].map(c => (
-                        <button 
-                          key={c}
-                          className="w-10 h-10 rounded-full border-2 border-white shadow-sm hover:scale-110 active:scale-95 transition-all"
-                          style={{ backgroundColor: c }}
-                          onClick={() => setTextColor(c)}
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40 block">Box & Text Palette</label>
+                  <div className="grid grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                       <label className="text-[9px] font-bold opacity-30 uppercase">Box Color</label>
+                       <div className="flex gap-2 items-center">
+                        <input 
+                          type="color"
+                          className="w-10 h-10 rounded-xl border-2 border-white shadow-sm cursor-pointer p-0 bg-transparent overflow-hidden"
+                          value={boxColor}
+                          onChange={(e) => setBoxColor(e.target.value)}
                         />
-                      ))}
+                        <button 
+                           onClick={() => setBoxColor(accentColor)}
+                           className="text-[9px] font-bold uppercase tracking-widest opacity-40 hover:opacity-100 transition-opacity"
+                        >
+                           Reset
+                        </button>
+                       </div>
                     </div>
+                    <div className="space-y-2">
+                       <label className="text-[9px] font-bold opacity-30 uppercase">Text Color</label>
+                       <div className="flex gap-2 items-center">
+                        <input 
+                          type="color"
+                          className="w-10 h-10 rounded-xl border-2 border-white shadow-sm cursor-pointer p-0 bg-transparent overflow-hidden"
+                          value={textColor}
+                          onChange={(e) => setTextColor(e.target.value)}
+                        />
+                        <div className="flex gap-1">
+                          {['#FFFFFF', '#000000'].map(c => (
+                            <button 
+                              key={c}
+                              className="w-6 h-6 rounded-full border border-black/5 shadow-sm"
+                              style={{ backgroundColor: c }}
+                              onClick={() => setTextColor(c)}
+                            />
+                          ))}
+                        </div>
+                       </div>
+                    </div>
+                  </div>
+                  <div className="pt-2">
+                    <button 
+                      onClick={() => setShowOutline(!showOutline)}
+                      className={`w-full py-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border-2 ${showOutline ? 'bg-[#1C1C1C] text-white border-[#1C1C1C] shadow-lg' : 'border-black/5 opacity-40 hover:opacity-60'}`}
+                    >
+                      {showOutline ? 'Outline: Active' : 'Enable Matching Outline'}
+                    </button>
                   </div>
                 </div>
               </motion.div>
