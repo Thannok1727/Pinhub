@@ -49,15 +49,12 @@ export default function App() {
     }
   }, [data, fontSize, fontFamily, textColor, debouncedGenerate]);
 
-  const [status, setStatus] = useState<string | null>(null);
-
   const handleScrape = async () => {
     if (!url) return;
     setLoading(true);
     setError(null);
     setData(null);
     setPreviews(null);
-    setStatus("Scraping Article Headlines...");
 
     try {
       const response = await fetch("/api/scrape", {
@@ -69,7 +66,6 @@ export default function App() {
       const json = await response.json();
       if (!response.ok) throw new Error(json.error || "Failed to scrape");
 
-      setStatus("Analyzing Design Palette...");
       const formattedData = {
         ...json,
         titleA: formatTitle(json.title || "Untitled Post"),
@@ -80,7 +76,6 @@ export default function App() {
     } catch (err: any) {
       console.error("Fetch Error:", err);
       setError(err.message || "Something went wrong. Please check the URL.");
-      setStatus(null);
     } finally {
       setLoading(false);
     }
@@ -88,7 +83,6 @@ export default function App() {
 
   const generatePins = async (pinData: ScrapedData) => {
     if (!pinData.image) return;
-    setStatus("Painting High-Res Canvases...");
     
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -100,12 +94,10 @@ export default function App() {
       const pinA = drawPin(pinData.titleA, img, color, "A");
       const pinB = drawPin(pinData.titleB, img, color, "B");
       setPreviews({ a: pinA, b: pinB });
-      setStatus(null);
     };
 
     img.onerror = () => {
-      setPreviews(null);
-      setError("We found the article but couldn't process the cover image. Please check the URL or try another one.");
+      setError("Unable to process high-res image. Try another blog post.");
     };
   };
 
@@ -380,7 +372,7 @@ export default function App() {
                          <div className="h-[24%] bg-black/10" />
                          <div className="h-[38%] bg-black/5" />
                     </div>
-                    <p className="font-serif italic text-black/40">{status || "Visualizing your content..."}</p>
+                    <p className="font-serif italic text-black/40">Visualizing your content...</p>
                 </motion.div>
              ) : !previews ? (
               <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center max-w-sm space-y-6 opacity-30">
