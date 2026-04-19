@@ -75,9 +75,14 @@ async function startServer() {
         });
       }
 
-      if (image && !image.startsWith("http")) {
-        const baseUrl = new URL(url);
-        image = new URL(image, baseUrl.origin).href;
+      if (image && !image.startsWith("http") && !image.startsWith("//")) {
+        try {
+          image = new URL(image, url).href;
+        } catch (e) {
+          console.error("[URL Resolution Error]", e);
+        }
+      } else if (image && image.startsWith("//")) {
+        image = `https:${image}`;
       }
 
       console.log(`[Scrape Success] Title: ${title?.substring(0, 30)}...`);
